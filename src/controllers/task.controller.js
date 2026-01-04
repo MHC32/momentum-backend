@@ -12,6 +12,22 @@ const emitTaskUpdate = (req, task, type = 'task-updated') => {
   }
 };
 
+// Helper pour mettre à jour la progression du projet
+const updateProjectProgress = async (projectId) => {
+  if (!projectId) return;
+  
+  try {
+    const project = await Project.findById(projectId);
+    if (project) {
+      const progress = await project.calculateProgress();
+      project.progress = progress;
+      await project.save();
+    }
+  } catch (error) {
+    console.error('Error updating project progress:', error);
+  }
+};
+
 // @desc    Get all tasks
 // @route   GET /api/tasks
 // @access  Private
@@ -111,9 +127,7 @@ exports.createTask = async (req, res) => {
 
     // Mettre à jour la progression du projet
     if (task.project) {
-      const project = await Project.findById(task.project);
-      await project.calculateProgress();
-      await project.save();
+      await updateProjectProgress(task.project._id || task.project);
     }
 
     // 🆕 Émettre via Socket.IO
@@ -185,11 +199,9 @@ exports.updateTask = async (req, res) => {
       }
     ).populate('project', 'name color icon');
 
-    // Mettre à jour la progression du projet
+    // Mettre à jour la progression du projet si status changé
     if (updates.status && updatedTask.project) {
-      const project = await Project.findById(updatedTask.project._id);
-      await project.calculateProgress();
-      await project.save();
+      await updateProjectProgress(updatedTask.project._id);
     }
 
     // 🆕 Émettre via Socket.IO
@@ -236,11 +248,7 @@ exports.deleteTask = async (req, res) => {
 
     // Mettre à jour la progression du projet
     if (projectId) {
-      const project = await Project.findById(projectId);
-      if (project) {
-        await project.calculateProgress();
-        await project.save();
-      }
+      await updateProjectProgress(projectId);
     }
 
     // 🆕 Émettre via Socket.IO
@@ -308,9 +316,7 @@ exports.updateTaskStatus = async (req, res) => {
 
     // Mettre à jour la progression du projet
     if (updatedTask.project) {
-      const project = await Project.findById(updatedTask.project._id);
-      await project.calculateProgress();
-      await project.save();
+      await updateProjectProgress(updatedTask.project._id);
     }
 
     // 🆕 Émettre via Socket.IO

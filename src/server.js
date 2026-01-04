@@ -1,3 +1,4 @@
+// backend/src/server.js
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
@@ -15,6 +16,8 @@ dotenv.config();
 connectDB();
 
 const app = express();
+
+// ✅ IMPORTANT: Trust proxy (car derrière Nginx)
 app.set('trust proxy', 1);
 
 // Security middleware
@@ -23,9 +26,14 @@ app.use(helmet());
 // Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  standardHeaders: true,
+  legacyHeaders: false,
 });
+
+// ✅ Rate limit SAUF webhooks (GitHub webhook = public)
 app.use('/api/', (req, res, next) => {
+  // Skip rate limit pour webhooks
   if (req.path.startsWith('/webhooks/')) {
     return next();
   }
@@ -63,7 +71,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/projects', require('./routes/project.routes'));
 app.use('/api/tasks', require('./routes/task.routes'));
-app.use('/api/webhooks', require('./routes/webhook.routes')); // 🆕 NOUVEAU
+app.use('/api/webhooks', require('./routes/webhook.routes')); // 🆕 WEBHOOK
 
 // Error handler (must be last)
 app.use(errorHandler);
@@ -77,7 +85,6 @@ app.use((req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-
 const server = app.listen(PORT, () => {
   console.log(`\n🚀 Momentum API running in ${process.env.NODE_ENV} mode on port ${PORT}\n`);
 });
@@ -93,13 +100,13 @@ const io = require('socket.io')(server, {
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log(`✅ Socket connected: ${socket.id}`);
-  
+
   // Join user room (pour notifications user-specific)
   socket.on('join-user-room', (userId) => {
     socket.join(`user:${userId}`);
     console.log(`👤 User ${userId} joined their room`);
   });
-  
+
   socket.on('disconnect', () => {
     console.log(`❌ Socket disconnected: ${socket.id}`);
   });

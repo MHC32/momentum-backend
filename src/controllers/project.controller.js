@@ -16,12 +16,17 @@ exports.getProjects = async (req, res) => {
     const projects = await Project.find(query)
       .sort({ createdAt: -1 });
 
-    // Calculer le nombre de tâches ET la progression pour chaque projet
+    // Calculer le nombre de tâches, progression ET commits pour chaque projet
     const projectsWithStats = await Promise.all(
       projects.map(async (project) => {
         const tasks = await Task.find({ project: project._id });
         const taskCount = tasks.length;
         const completedCount = tasks.filter(task => task.status === 'done').length;
+        
+        // ✅ NOUVEAU : Calculer le nombre total de commits
+        const commitCount = tasks.reduce((acc, task) => {
+          return acc + (task.commits?.length || 0);
+        }, 0);
         
         // Calculer la progression
         const progress = taskCount > 0 
@@ -37,7 +42,8 @@ exports.getProjects = async (req, res) => {
           ...project.toObject(),
           taskCount,
           completedCount,
-          progress // Ajouter la progression calculée
+          commitCount, // ✅ Ajouter commitCount calculé
+          progress
         };
       })
     );
@@ -81,12 +87,18 @@ exports.getProject = async (req, res) => {
 
     // Récupérer les tâches du projet
     const tasks = await Task.find({ project: project._id });
+    
+    // ✅ Calculer commitCount aussi pour un seul projet
+    const commitCount = tasks.reduce((acc, task) => {
+      return acc + (task.commits?.length || 0);
+    }, 0);
 
     res.status(200).json({
       success: true,
       data: {
         ...project.toObject(),
-        tasks
+        tasks,
+        commitCount // ✅ Inclure dans la réponse
       }
     });
   } catch (error) {
