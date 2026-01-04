@@ -162,7 +162,6 @@ TaskSchema.pre('save', function() {
 // Index pour recherche rapide
 TaskSchema.index({ user: 1, status: 1 });
 TaskSchema.index({ user: 1, project: 1 });
-TaskSchema.index({ taskId: 1 });
 TaskSchema.index({ deadline: 1 });
 
 module.exports = mongoose.model('Task', TaskSchema);

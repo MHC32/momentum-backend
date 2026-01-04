@@ -15,6 +15,7 @@ dotenv.config();
 connectDB();
 
 const app = express();
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet());
@@ -24,7 +25,12 @@ const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
 });
-app.use('/api/', limiter);
+app.use('/api/', (req, res, next) => {
+  if (req.path.startsWith('/webhooks/')) {
+    return next();
+  }
+  return limiter(req, res, next);
+});
 
 // CORS
 app.use(cors({
