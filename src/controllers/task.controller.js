@@ -1,5 +1,6 @@
 const Task = require('../models/Task.model');
 const Project = require('../models/Project.model');
+const goalController = require('./goal.controller');
 
 // Helper pour émettre via Socket.IO
 const emitTaskUpdate = (req, task, type = 'task-updated') => {
@@ -190,6 +191,10 @@ exports.updateTask = async (req, res) => {
       }
     });
 
+    // 🎯 NOUVEAU : Vérifier si task passe à 'done' pour sync livres
+    const wasNotDone = task.status !== 'done';
+    const willBeDone = updates.status === 'done';
+
     const updatedTask = await Task.findByIdAndUpdate(
       id,
       updates,
@@ -202,6 +207,50 @@ exports.updateTask = async (req, res) => {
     // Mettre à jour la progression du projet si status changé
     if (updates.status && updatedTask.project) {
       await updateProjectProgress(updatedTask.project._id);
+    }
+
+    // 🎯 NOUVEAU : Sync objectif livres si task done dans projet book
+    if (wasNotDone && willBeDone && updatedTask.project) {
+      try {
+        console.log('🎯 Task marked as done, checking if book project...');
+        
+        // Charger le projet complet pour vérifier le type
+        const project = await Project.findById(updatedTask.project._id);
+        
+        if (project && project.type === 'book') {
+          console.log(`📚 Book project detected: ${project.name}`);
+          
+          // Calculer la progression du projet
+          const allTasks = await Task.find({ project: project._id });
+          const completedTasks = allTasks.filter(t => t.status === 'done').length;
+          const projectProgress = (completedTasks / allTasks.length) * 100;
+          
+          console.log(`📊 Project progress: ${projectProgress}%`);
+          
+          // Si le projet est terminé à 100%
+          if (projectProgress >= 100) {
+            console.log('✅ Project completed, syncing book goal...');
+            
+            const io = req.app.get('io');
+            const syncResult = await goalController.syncBookGoalInternal(
+              project._id,
+              req.user.id,
+              io
+            );
+            
+            if (syncResult) {
+              console.log(`✅ Book goal synced: ${syncResult.goal.current_value}/${syncResult.goal.target_value} livres`);
+            } else {
+              console.log('⚠️  No book goal found');
+            }
+          } else {
+            console.log(`⏳ Project not yet completed: ${projectProgress}%`);
+          }
+        }
+      } catch (syncError) {
+        console.error('❌ Error syncing book goal:', syncError.message);
+        // Ne pas bloquer la mise à jour de la task si la sync échoue
+      }
     }
 
     // 🆕 Émettre via Socket.IO
@@ -307,6 +356,10 @@ exports.updateTaskStatus = async (req, res) => {
       });
     }
 
+    // 🎯 NOUVEAU : Vérifier si task passe à 'done' pour sync livres
+    const wasNotDone = task.status !== 'done';
+    const willBeDone = status === 'done';
+
     // Mettre à jour le statut (hooks pre-save géreront completedAt et completed)
     task.status = status;
     await task.save();
@@ -317,6 +370,42 @@ exports.updateTaskStatus = async (req, res) => {
     // Mettre à jour la progression du projet
     if (updatedTask.project) {
       await updateProjectProgress(updatedTask.project._id);
+    }
+
+    // 🎯 NOUVEAU : Sync objectif livres si task done dans projet book
+    if (wasNotDone && willBeDone && updatedTask.project) {
+      try {
+        console.log('🎯 Task marked as done, checking if book project...');
+        
+        const project = await Project.findById(updatedTask.project._id);
+        
+        if (project && project.type === 'book') {
+          console.log(`📚 Book project detected: ${project.name}`);
+          
+          const allTasks = await Task.find({ project: project._id });
+          const completedTasks = allTasks.filter(t => t.status === 'done').length;
+          const projectProgress = (completedTasks / allTasks.length) * 100;
+          
+          console.log(`📊 Project progress: ${projectProgress}%`);
+          
+          if (projectProgress >= 100) {
+            console.log('✅ Project completed, syncing book goal...');
+            
+            const io = req.app.get('io');
+            const syncResult = await goalController.syncBookGoalInternal(
+              project._id,
+              req.user.id,
+              io
+            );
+            
+            if (syncResult) {
+              console.log(`✅ Book goal synced: ${syncResult.goal.current_value}/${syncResult.goal.target_value} livres`);
+            }
+          }
+        }
+      } catch (syncError) {
+        console.error('❌ Error syncing book goal:', syncError.message);
+      }
     }
 
     // 🆕 Émettre via Socket.IO

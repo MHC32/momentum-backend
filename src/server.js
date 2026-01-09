@@ -72,6 +72,7 @@ app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/projects', require('./routes/project.routes'));
 app.use('/api/tasks', require('./routes/task.routes'));
 app.use('/api/webhooks', require('./routes/webhook.routes')); // 🆕 WEBHOOK
+app.use('/api/goals', require('./routes/goal.routes'));
 
 // Error handler (must be last)
 app.use(errorHandler);

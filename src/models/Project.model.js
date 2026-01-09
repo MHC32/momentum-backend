@@ -59,6 +59,20 @@ const ProjectSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+    type: {
+    type: String,
+    enum: ['regular', 'book'],
+    default: 'regular'
+  },
+  
+  book_pages: {
+    type: Number
+  },
+  
+  linked_goal_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Goal'
   }
 }, {
   timestamps: true,
