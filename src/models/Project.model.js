@@ -15,8 +15,30 @@ const ProjectSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['dev', 'personal'],
+    enum: ['dev', 'personal', 'book'], // 🆕 AJOUT : 'book'
     default: 'dev'
+  },
+  // 🆕 NOUVEAU : Champs spécifiques pour les projets de type "book"
+  book_pages: {
+    type: Number,
+    default: null,
+    min: 1
+  },
+  book_author: {
+    type: String,
+    trim: true,
+    default: null
+  },
+  book_isbn: {
+    type: String,
+    trim: true,
+    default: null
+  },
+  // 🆕 NOUVEAU : Lien vers l'objectif Goals
+  linked_goal_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Goal',
+    default: null
   },
   color: {
     type: String,
@@ -60,20 +82,6 @@ const ProjectSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-    type: {
-    type: String,
-    enum: ['regular', 'book'],
-    default: 'regular'
-  },
-  
-  book_pages: {
-    type: Number
-  },
-  
-  linked_goal_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Goal'
-  }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
@@ -96,15 +104,55 @@ ProjectSchema.methods.calculateProgress = async function() {
   if (tasks.length === 0) {
     return 0;
   }
-  
+
   const completedTasks = tasks.filter(task => task.status === 'done').length;
   const progress = Math.round((completedTasks / tasks.length) * 100);
   
   return progress;
 };
 
+// 🆕 NOUVELLE MÉTHODE : Calculer les pages lues (pour projets book)
+ProjectSchema.methods.calculatePagesRead = async function() {
+  if (this.type !== 'book') {
+    return 0;
+  }
+
+  const Task = mongoose.model('Task');
+  const tasks = await Task.find({ 
+    project: this._id,
+    status: 'done'
+  });
+
+  // Parser les pages depuis les titres des tasks
+  // Ex: "Lire chapitres 1-3 (50 pages)" → 50
+  let totalPagesRead = 0;
+
+  for (const task of tasks) {
+    const match = task.title.match(/\((\d+)\s*pages?\)/i);
+    if (match) {
+      totalPagesRead += parseInt(match[1]);
+    }
+  }
+
+  return totalPagesRead;
+};
+
+// 🆕 HOOK : Auto-compléter le projet book si toutes les tâches sont done
+ProjectSchema.pre('save', async function(next) {
+  if (this.type === 'book' && this.isModified('progress')) {
+    // Si le projet atteint 100% et n'était pas encore complété
+    if (this.progress >= 100 && this.status !== 'completed') {
+      this.status = 'completed';
+      this.endDate = new Date();
+      console.log(`📚 Book project "${this.name}" auto-completed`);
+    }
+  }
+  next();
+});
+
 // Index pour recherche rapide
 ProjectSchema.index({ user: 1, status: 1 });
 ProjectSchema.index({ user: 1, type: 1 });
+ProjectSchema.index({ user: 1, type: 1, status: 1 }); // 🆕 Index composite
 
 module.exports = mongoose.model('Project', ProjectSchema);
