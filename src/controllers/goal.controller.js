@@ -96,7 +96,12 @@ exports.getGoals = async (req, res) => {
     const filter = { user: req.user._id };
 
     if (level) filter.level = level;
-    if (category) filter.category = category;
+    
+    // ✅ FIX : Ne pas ajouter category si elle est null ou la string "null"
+    if (category && category !== 'null') {
+      filter.category = category;
+    }
+    
     if (status) filter.status = status;
     if (year) filter.year = parseInt(year);
     if (quarter) filter.quarter = parseInt(quarter);
@@ -666,7 +671,7 @@ exports.getGoalsStats = async (req, res) => {
 
     const filter = { user: req.user._id };
     if (year) filter.year = parseInt(year);
-    if (category) filter.category = category;
+    if (category && category !== 'null') filter.category = category;
 
     // Compter par statut
     const statusCounts = await Goal.aggregate([
