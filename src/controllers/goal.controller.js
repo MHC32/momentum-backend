@@ -1,8 +1,7 @@
 const Goal = require('../models/Goal.model');
-const Project = require('../models/Project.model');
 const Task = require('../models/Task.model');
 
-// ==================== CRUD DE BASE ====================
+// ==================== CRÉATION ====================
 
 /**
  * Créer un nouvel objectif
@@ -18,16 +17,16 @@ exports.createGoal = async (req, res) => {
     // Créer l'objectif
     const goal = await Goal.create(goalData);
 
-    // Si breakdown_auto est activé et que c'est un objectif numérique
-    if (goal.breakdown_auto && goal.type === 'numeric' && goal.level !== 'daily' && goal.level !== 'none') {
+    // Si objectif annuel numérique avec auto_decompose
+    if (goal.auto_decompose && goal.type === 'numeric' && goal.level === 'annual') {
       try {
-        const breakdownResult = await Goal.autoBreakdown(goal._id);
+        const breakdown = await Goal.autoBreakdown(goal._id);
         
         // Émettre via Socket.IO
         if (req.io) {
           req.io.to(`user:${req.user._id}`).emit('goal-created', {
             goal,
-            breakdown: breakdownResult
+            breakdown
           });
         }
 
@@ -36,12 +35,11 @@ exports.createGoal = async (req, res) => {
           message: 'Objectif créé avec décomposition automatique',
           data: {
             goal,
-            breakdown: breakdownResult
+            breakdown
           }
         });
       } catch (breakdownError) {
         console.error('Erreur décomposition:', breakdownError);
-        // L'objectif est créé, mais la décomposition a échoué
         return res.status(201).json({
           success: true,
           message: 'Objectif créé mais décomposition échouée',
@@ -72,84 +70,576 @@ exports.createGoal = async (req, res) => {
   }
 };
 
+// ==================== VUE ANNUEL ====================
+
 /**
- * Obtenir tous les objectifs avec filtres
- * GET /api/goals
+ * Obtenir tous les objectifs annuels
+ * GET /api/goals/annual
  */
-exports.getGoals = async (req, res) => {
+exports.getAnnualGoals = async (req, res) => {
   try {
-    const {
-      level,
-      category,
-      status,
-      year,
-      quarter,
-      month,
-      week,
-      display_in_hierarchy,
-      display_in_checklist,
-      parent_goal_id,
-      include_children
-    } = req.query;
-
-    // Construire le filtre
-    const filter = { user: req.user._id };
-
-    if (level) filter.level = level;
+    const { year, category } = req.query;
     
-    // ✅ FIX : Ne pas ajouter category si elle est null ou la string "null"
+    const filter = {
+      user: req.user._id,
+      level: 'annual',
+      year: parseInt(year) || new Date().getFullYear(),
+      display_in_hierarchy: true
+    };
+
     if (category && category !== 'null') {
       filter.category = category;
     }
-    
-    if (status) filter.status = status;
-    if (year) filter.year = parseInt(year);
-    if (quarter) filter.quarter = parseInt(quarter);
-    if (month) filter.month = parseInt(month);
-    if (week) filter.week = parseInt(week);
-    
-    if (display_in_hierarchy !== undefined) {
-      filter.display_in_hierarchy = display_in_hierarchy === 'true';
-    }
-    
-    if (display_in_checklist !== undefined) {
-      filter.display_in_checklist = display_in_checklist === 'true';
-    }
 
-    if (parent_goal_id !== undefined) {
-      filter.parent_goal_id = parent_goal_id === 'null' ? null : parent_goal_id;
-    }
+    const goals = await Goal.find(filter)
+      .sort({ category: 1, priority: -1, createdAt: 1 });
 
-    // Requête avec population optionnelle
-    let query = Goal.find(filter).sort({ createdAt: -1 });
-
-    if (include_children === 'true') {
-      query = query.populate('children_goal_ids');
-    }
-
-    const goals = await query;
-
-    // Recalculer progress et status pour chaque objectif
+    // Recalculer progress et status
     for (const goal of goals) {
       goal.progress_percent = goal.calculateProgress();
       goal.status = goal.calculateStatus();
     }
 
+    // Grouper par catégorie
+    const goalsByCategory = goals.reduce((acc, goal) => {
+      if (!acc[goal.category]) {
+        acc[goal.category] = [];
+      }
+      acc[goal.category].push(goal);
+      return acc;
+    }, {});
+
     res.status(200).json({
       success: true,
       count: goals.length,
-      data: { goals }
+      data: {
+        goals,
+        goalsByCategory
+      }
     });
 
   } catch (error) {
-    console.error('Erreur getGoals:', error);
+    console.error('Erreur getAnnualGoals:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur lors de la récupération des objectifs',
+      message: 'Erreur lors de la récupération des objectifs annuels',
       error: error.message
     });
   }
 };
+
+// ==================== VUE TRIMESTRIEL ====================
+
+/**
+ * Obtenir les objectifs d'un trimestre
+ * GET /api/goals/quarterly/:quarter
+ */
+exports.getQuarterlyGoals = async (req, res) => {
+  try {
+    const { quarter } = req.params;
+    const { year, category } = req.query;
+    
+    const quarterNum = parseInt(quarter);
+    const yearNum = parseInt(year) || new Date().getFullYear();
+
+    if (quarterNum < 1 || quarterNum > 4) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le trimestre doit être entre 1 et 4'
+      });
+    }
+
+    // 1. Objectifs trimestriels décomposés
+    const breakdownFilter = {
+      user: req.user._id,
+      level: 'quarterly',
+      quarter: quarterNum,
+      year: yearNum,
+      parent_annual_id: { $ne: null }
+    };
+
+    if (category && category !== 'null') {
+      breakdownFilter.category = category;
+    }
+
+    const breakdownGoals = await Goal.find(breakdownFilter)
+      .sort({ category: 1, priority: -1 });
+
+    // 2. Objectifs personnels pour ce trimestre
+    const personalFilter = {
+      user: req.user._id,
+      is_personal: true,
+      $or: [
+        { personal_duration_type: 'this_quarter', quarter: quarterNum },
+        { 
+          deadline: {
+            $gte: new Date(yearNum, (quarterNum - 1) * 3, 1),
+            $lte: new Date(yearNum, quarterNum * 3, 0, 23, 59, 59)
+          }
+        }
+      ],
+      year: yearNum
+    };
+
+    if (category && category !== 'null') {
+      personalFilter.category = category;
+    }
+
+    const personalGoals = await Goal.find(personalFilter)
+      .sort({ priority: -1, deadline: 1 });
+
+    // Combiner
+    const allGoals = [...breakdownGoals, ...personalGoals];
+
+    // Recalculer progress
+    for (const goal of allGoals) {
+      goal.progress_percent = goal.calculateProgress();
+      goal.status = goal.calculateStatus();
+    }
+
+    // Grouper par catégorie
+    const goalsByCategory = allGoals.reduce((acc, goal) => {
+      if (!acc[goal.category]) {
+        acc[goal.category] = [];
+      }
+      acc[goal.category].push(goal);
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      success: true,
+      count: allGoals.length,
+      data: {
+        quarter: quarterNum,
+        year: yearNum,
+        goals: allGoals,
+        goalsByCategory,
+        breakdown: breakdownGoals.length,
+        personal: personalGoals.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur getQuarterlyGoals:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des objectifs trimestriels',
+      error: error.message
+    });
+  }
+};
+
+// ==================== VUE MENSUEL ====================
+
+/**
+ * Obtenir les objectifs d'un mois
+ * GET /api/goals/monthly/:month
+ */
+exports.getMonthlyGoals = async (req, res) => {
+  try {
+    const { month } = req.params;
+    const { year, category } = req.query;
+    
+    const monthNum = parseInt(month);
+    const yearNum = parseInt(year) || new Date().getFullYear();
+
+    if (monthNum < 1 || monthNum > 12) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le mois doit être entre 1 et 12'
+      });
+    }
+
+    // 1. Objectifs mensuels décomposés
+    const breakdownFilter = {
+      user: req.user._id,
+      level: 'monthly',
+      month: monthNum,
+      year: yearNum,
+      parent_annual_id: { $ne: null }
+    };
+
+    if (category && category !== 'null') {
+      breakdownFilter.category = category;
+    }
+
+    const breakdownGoals = await Goal.find(breakdownFilter)
+      .sort({ category: 1, priority: -1 });
+
+    // 2. Objectifs personnels avec deadline ce mois
+    const startOfMonth = new Date(yearNum, monthNum - 1, 1);
+    const endOfMonth = new Date(yearNum, monthNum, 0, 23, 59, 59);
+
+    const personalFilter = {
+      user: req.user._id,
+      is_personal: true,
+      $or: [
+        { personal_duration_type: 'this_month', month: monthNum },
+        {
+          deadline: {
+            $gte: startOfMonth,
+            $lte: endOfMonth
+          }
+        }
+      ],
+      year: yearNum
+    };
+
+    if (category && category !== 'null') {
+      personalFilter.category = category;
+    }
+
+    const personalGoals = await Goal.find(personalFilter)
+      .sort({ priority: -1, deadline: 1 });
+
+    // 3. Tâches du mois
+    const tasks = await Task.find({
+      user: req.user._id,
+      deadline: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      }
+    }).sort({ deadline: 1, priority: -1 });
+
+    // Combiner
+    const allGoals = [...breakdownGoals, ...personalGoals];
+
+    // Recalculer progress
+    for (const goal of allGoals) {
+      goal.progress_percent = goal.calculateProgress();
+      goal.status = goal.calculateStatus();
+    }
+
+    // Grouper par catégorie
+    const goalsByCategory = allGoals.reduce((acc, goal) => {
+      if (!acc[goal.category]) {
+        acc[goal.category] = [];
+      }
+      acc[goal.category].push(goal);
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      success: true,
+      count: allGoals.length,
+      data: {
+        month: monthNum,
+        year: yearNum,
+        monthName: new Date(yearNum, monthNum - 1).toLocaleDateString('fr-FR', { month: 'long' }),
+        goals: allGoals,
+        goalsByCategory,
+        tasks,
+        breakdown: breakdownGoals.length,
+        personal: personalGoals.length,
+        tasksCount: tasks.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur getMonthlyGoals:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des objectifs mensuels',
+      error: error.message
+    });
+  }
+};
+
+// ==================== VUE HEBDOMADAIRE ====================
+
+/**
+ * Obtenir les objectifs d'une semaine
+ * GET /api/goals/weekly/:week
+ */
+exports.getWeeklyGoals = async (req, res) => {
+  try {
+    const { week } = req.params;
+    const { year, category } = req.query;
+    
+    const weekNum = parseInt(week);
+    const yearNum = parseInt(year) || new Date().getFullYear();
+
+    if (weekNum < 1 || weekNum > 53) {
+      return res.status(400).json({
+        success: false,
+        message: 'La semaine doit être entre 1 et 53'
+      });
+    }
+
+    // 1. Objectifs hebdomadaires décomposés
+    const breakdownFilter = {
+      user: req.user._id,
+      level: 'weekly',
+      week: weekNum,
+      year: yearNum,
+      parent_annual_id: { $ne: null }
+    };
+
+    if (category && category !== 'null') {
+      breakdownFilter.category = category;
+    }
+
+    const breakdownGoals = await Goal.find(breakdownFilter)
+      .sort({ category: 1, priority: -1 });
+
+    // 2. Calculer dates de la semaine
+    const firstDayOfYear = new Date(yearNum, 0, 1);
+    const daysOffset = (weekNum - 1) * 7;
+    const weekStart = new Date(firstDayOfYear);
+    weekStart.setDate(firstDayOfYear.getDate() + daysOffset);
+    
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    // 3. Objectifs personnels avec deadline cette semaine
+    const personalFilter = {
+      user: req.user._id,
+      is_personal: true,
+      $or: [
+        { personal_duration_type: 'this_week', week: weekNum },
+        {
+          deadline: {
+            $gte: weekStart,
+            $lte: weekEnd
+          }
+        }
+      ],
+      year: yearNum
+    };
+
+    if (category && category !== 'null') {
+      personalFilter.category = category;
+    }
+
+    const personalGoals = await Goal.find(personalFilter)
+      .sort({ priority: -1, deadline: 1 });
+
+    // 4. Tâches de la semaine
+    const tasks = await Task.find({
+      user: req.user._id,
+      deadline: {
+        $gte: weekStart,
+        $lte: weekEnd
+      }
+    }).sort({ deadline: 1, priority: -1 });
+
+    // Combiner
+    const allGoals = [...breakdownGoals, ...personalGoals];
+
+    // Recalculer progress
+    for (const goal of allGoals) {
+      goal.progress_percent = goal.calculateProgress();
+      goal.status = goal.calculateStatus();
+    }
+
+    // Pour les objectifs numériques, calculer breakdown par jour
+    const goalsWithDailyBreakdown = breakdownGoals.map(goal => {
+      if (goal.type === 'numeric') {
+        return {
+          ...goal.toObject(),
+          dailyBreakdown: {
+            target: Math.round(goal.target_value / 7),
+            days: [] // Sera rempli par le frontend
+          }
+        };
+      }
+      return goal;
+    });
+
+    res.status(200).json({
+      success: true,
+      count: allGoals.length,
+      data: {
+        week: weekNum,
+        year: yearNum,
+        weekStart: weekStart.toISOString(),
+        weekEnd: weekEnd.toISOString(),
+        goals: allGoals,
+        goalsWithDailyBreakdown,
+        tasks,
+        breakdown: breakdownGoals.length,
+        personal: personalGoals.length,
+        tasksCount: tasks.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur getWeeklyGoals:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des objectifs hebdomadaires',
+      error: error.message
+    });
+  }
+};
+
+// ==================== VUE QUOTIDIEN + FOCUS ====================
+
+/**
+ * Obtenir les objectifs du jour + Focus du jour
+ * GET /api/goals/daily
+ */
+exports.getDailyGoals = async (req, res) => {
+  try {
+    const { date, category } = req.query;
+    
+    const targetDate = date ? new Date(date) : new Date();
+    const yearNum = targetDate.getFullYear();
+
+    // 1. Objectifs quotidiens décomposés
+    const breakdownFilter = {
+      user: req.user._id,
+      level: 'daily',
+      year: yearNum,
+      parent_annual_id: { $ne: null }
+    };
+
+    if (category && category !== 'null') {
+      breakdownFilter.category = category;
+    }
+
+    const breakdownGoals = await Goal.find(breakdownFilter)
+      .sort({ category: 1, priority: -1 });
+
+    // 2. Focus du jour (deadlines aujourd'hui)
+    const focusGoals = await Goal.getFocusOfTheDay(req.user._id, targetDate);
+
+    // 3. Objectifs personnels affichés en checklist
+    const personalChecklistGoals = await Goal.find({
+      user: req.user._id,
+      is_personal: true,
+      display_in_checklist: true,
+      completed: false
+    }).sort({ priority: -1, deadline: 1 });
+
+    // 4. Tâches du jour
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const tasks = await Task.find({
+      user: req.user._id,
+      deadline: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      }
+    }).sort({ priority: -1, deadline: 1 });
+
+    // Combiner tous les objectifs daily
+    const allDailyGoals = [
+      ...breakdownGoals,
+      ...personalChecklistGoals
+    ];
+
+    // Recalculer progress
+    for (const goal of allDailyGoals) {
+      goal.progress_percent = goal.calculateProgress();
+      goal.status = goal.calculateStatus();
+    }
+
+    // Calculer stats Focus du jour
+    const focusCompleted = focusGoals.filter(g => g.completed || g.progress_percent >= 100).length;
+    const focusTotal = focusGoals.length;
+    const focusProgress = focusTotal > 0 ? Math.round((focusCompleted / focusTotal) * 100) : 0;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        date: targetDate.toISOString(),
+        dateFormatted: targetDate.toLocaleDateString('fr-FR', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        }),
+        focus: {
+          goals: focusGoals,
+          completed: focusCompleted,
+          total: focusTotal,
+          progress: focusProgress
+        },
+        dailyGoals: allDailyGoals,
+        tasks,
+        breakdown: breakdownGoals.length,
+        personal: personalChecklistGoals.length,
+        tasksCount: tasks.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur getDailyGoals:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des objectifs quotidiens',
+      error: error.message
+    });
+  }
+};
+
+// ==================== OBJECTIFS PERSONNELS ====================
+
+/**
+ * Obtenir tous les objectifs personnels
+ * GET /api/goals/personal
+ */
+exports.getPersonalGoals = async (req, res) => {
+  try {
+    const { status, category } = req.query;
+    
+    const filter = {
+      user: req.user._id,
+      is_personal: true
+    };
+
+    if (category && category !== 'null') {
+      filter.category = category;
+    }
+
+    if (status === 'ongoing') {
+      filter.completed = false;
+    } else if (status === 'completed') {
+      filter.completed = true;
+    }
+
+    const goals = await Goal.find(filter)
+      .sort({ completed: 1, priority: -1, deadline: 1, createdAt: -1 });
+
+    // Recalculer progress
+    for (const goal of goals) {
+      goal.progress_percent = goal.calculateProgress();
+      goal.status = goal.calculateStatus();
+    }
+
+    // Grouper par statut
+    const ongoing = goals.filter(g => !g.completed);
+    const completed = goals.filter(g => g.completed);
+
+    res.status(200).json({
+      success: true,
+      count: goals.length,
+      data: {
+        goals,
+        ongoing,
+        completed,
+        ongoingCount: ongoing.length,
+        completedCount: completed.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Erreur getPersonalGoals:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération des objectifs personnels',
+      error: error.message
+    });
+  }
+};
+
+// ==================== CRUD DE BASE ====================
 
 /**
  * Obtenir un objectif par ID
@@ -163,7 +653,8 @@ exports.getGoalById = async (req, res) => {
     })
       .populate('children_goal_ids')
       .populate('parent_goal_id')
-      .populate('linked_projects');
+      .populate('linked_projects')
+      .populate('linked_tasks');
 
     if (!goal) {
       return res.status(404).json({
@@ -172,7 +663,6 @@ exports.getGoalById = async (req, res) => {
       });
     }
 
-    // Recalculer progress et status
     goal.progress_percent = goal.calculateProgress();
     goal.status = goal.calculateStatus();
 
@@ -209,11 +699,11 @@ exports.updateGoal = async (req, res) => {
       });
     }
 
-    // Champs autorisés à être modifiés
     const allowedUpdates = [
       'title',
       'description',
       'target_value',
+      'current_value',
       'unit',
       'deadline',
       'color',
@@ -221,10 +711,11 @@ exports.updateGoal = async (req, res) => {
       'priority',
       'display_in_hierarchy',
       'display_in_checklist',
-      'steps'
+      'steps',
+      'completed',
+      'notes'
     ];
 
-    // Appliquer les mises à jour
     allowedUpdates.forEach(field => {
       if (req.body[field] !== undefined) {
         goal[field] = req.body[field];
@@ -233,7 +724,6 @@ exports.updateGoal = async (req, res) => {
 
     await goal.save();
 
-    // Émettre via Socket.IO
     if (req.io) {
       req.io.to(`user:${req.user._id}`).emit('goal-updated', { goal });
     }
@@ -272,8 +762,8 @@ exports.deleteGoal = async (req, res) => {
       });
     }
 
-    // Si breakdown_auto est activé, supprimer tous les enfants
-    if (goal.breakdown_auto && goal.children_goal_ids.length > 0) {
+    // Si décomposé, supprimer tous les enfants
+    if (goal.is_annual_breakdown && goal.children_goal_ids.length > 0) {
       await Goal.deleteMany({
         _id: { $in: goal.children_goal_ids }
       });
@@ -281,7 +771,6 @@ exports.deleteGoal = async (req, res) => {
 
     await goal.deleteOne();
 
-    // Émettre via Socket.IO
     if (req.io) {
       req.io.to(`user:${req.user._id}`).emit('goal-deleted', { 
         goalId: req.params.id 
@@ -306,7 +795,7 @@ exports.deleteGoal = async (req, res) => {
 // ==================== PROGRESSION ====================
 
 /**
- * Mettre à jour la progression d'un objectif
+ * Mettre à jour la progression (avec propagation)
  * PUT /api/goals/:id/progress
  */
 exports.updateProgress = async (req, res) => {
@@ -334,36 +823,31 @@ exports.updateProgress = async (req, res) => {
 
     let amountChanged = 0;
 
-    // Mise à jour par incrément
     if (increment !== undefined) {
       goal.current_value += increment;
       amountChanged = increment;
     }
     
-    // Mise à jour par valeur absolue
     if (value !== undefined) {
       amountChanged = value - goal.current_value;
       goal.current_value = value;
     }
 
-    // S'assurer que current_value ne dépasse pas target_value
     if (goal.current_value > goal.target_value) {
       goal.current_value = goal.target_value;
     }
 
-    // S'assurer que current_value n'est pas négatif
     if (goal.current_value < 0) {
       goal.current_value = 0;
     }
 
     await goal.updateProgressAndStatus();
 
-    // Propager vers le parent (système hybride)
-    if (amountChanged !== 0) {
+    // Propager vers les parents
+    if (amountChanged !== 0 && goal.parent_annual_id) {
       await Goal.propagateProgressUp(goal._id, amountChanged);
     }
 
-    // Émettre via Socket.IO
     if (req.io) {
       req.io.to(`user:${req.user._id}`).emit('goal-progress-updated', { 
         goal,
@@ -391,7 +875,7 @@ exports.updateProgress = async (req, res) => {
 };
 
 /**
- * Compléter une étape d'un objectif
+ * Compléter une étape
  * PUT /api/goals/:id/steps/:stepId/complete
  */
 exports.completeStep = async (req, res) => {
@@ -417,7 +901,6 @@ exports.completeStep = async (req, res) => {
       });
     }
 
-    // Trouver l'étape
     const step = goal.steps.find(s => s.id === stepId);
 
     if (!step) {
@@ -427,16 +910,13 @@ exports.completeStep = async (req, res) => {
       });
     }
 
-    // Toggle l'état de completion
     step.completed = !step.completed;
     step.completed_at = step.completed ? new Date() : null;
 
-    // Recalculer completed_steps
     goal.completed_steps = goal.steps.filter(s => s.completed).length;
 
     await goal.updateProgressAndStatus();
 
-    // Émettre via Socket.IO
     if (req.io) {
       req.io.to(`user:${req.user._id}`).emit('goal-step-completed', { 
         goal,
@@ -461,208 +941,10 @@ exports.completeStep = async (req, res) => {
   }
 };
 
-// ==================== INTÉGRATIONS ====================
+// ==================== STATS ====================
 
 /**
- * Synchroniser l'objectif commits avec les commits des tasks
- * POST /api/goals/sync-commits
- */
-exports.syncCommitsGoal = async (req, res) => {
-  try {
-    // Trouver l'objectif avec commits_integration activée
-    const goal = await Goal.findOne({
-      user: req.user._id,
-      'commits_integration.enabled': true,
-      level: { $in: ['annual', 'monthly', 'daily'] }
-    }).sort({ level: 1 }); // Prendre le plus haut niveau (annual)
-
-    if (!goal) {
-      return res.status(404).json({
-        success: false,
-        message: 'Aucun objectif avec intégration commits trouvé'
-      });
-    }
-
-    // Compter tous les commits depuis toutes les tasks de l'utilisateur
-    const tasks = await Task.find({
-      user: req.user._id,
-      'commits.0': { $exists: true }
-    });
-
-    const totalCommits = tasks.reduce((sum, task) => {
-      return sum + (task.commits ? task.commits.length : 0);
-    }, 0);
-
-    // Mettre à jour l'objectif
-    const previousValue = goal.current_value;
-    goal.current_value = totalCommits;
-    await goal.updateProgressAndStatus();
-
-    // Propager vers les enfants si nécessaire
-    const amountChanged = totalCommits - previousValue;
-    if (amountChanged !== 0) {
-      await Goal.propagateProgressUp(goal._id, amountChanged);
-    }
-
-    // Émettre via Socket.IO
-    if (req.io) {
-      req.io.to(`user:${req.user._id}`).emit('goal-commits-synced', { 
-        goal,
-        totalCommits,
-        amountChanged
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Objectif commits synchronisé',
-      data: { 
-        goal,
-        totalCommits,
-        amountChanged
-      }
-    });
-
-  } catch (error) {
-    console.error('Erreur syncCommitsGoal:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la synchronisation des commits',
-      error: error.message
-    });
-  }
-};
-
-/**
- * Synchroniser l'objectif livres avec un projet terminé
- * POST /api/goals/sync-book/:projectId
- */
-exports.syncBookGoal = async (req, res) => {
-  try {
-    const { projectId } = req.params;
-
-    // Trouver le projet
-    const project = await Project.findOne({
-      _id: projectId,
-      user: req.user._id,
-      type: 'book'
-    });
-
-    if (!project) {
-      return res.status(404).json({
-        success: false,
-        message: 'Projet livre non trouvé'
-      });
-    }
-
-    // Vérifier si le projet est complété à 100%
-    if (project.progress < 100) {
-      return res.status(400).json({
-        success: false,
-        message: 'Le projet n\'est pas encore terminé'
-      });
-    }
-
-    // Trouver l'objectif d'apprentissage (livres)
-    const goal = await Goal.findOne({
-      user: req.user._id,
-      category: 'learning',
-      type: 'numeric',
-      unit: 'livres'
-    }).sort({ level: 1 }); // Prendre le plus haut niveau (annual)
-
-    if (!goal) {
-      return res.status(404).json({
-        success: false,
-        message: 'Aucun objectif livres trouvé'
-      });
-    }
-
-    // Incrémenter l'objectif
-    goal.current_value += 1;
-    await goal.updateProgressAndStatus();
-
-    // Propager
-    await Goal.propagateProgressUp(goal._id, 1);
-
-    // Émettre via Socket.IO
-    if (req.io) {
-      req.io.to(`user:${req.user._id}`).emit('book-completed', { 
-        goal,
-        project,
-        bookTitle: project.name
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Livre complété et objectif mis à jour',
-      data: { 
-        goal,
-        project
-      }
-    });
-
-  } catch (error) {
-    console.error('Erreur syncBookGoal:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors de la synchronisation du livre',
-      error: error.message
-    });
-  }
-};
-
-/**
- * Recalculer la progression d'un objectif depuis ses enfants
- * POST /api/goals/:id/recalculate
- */
-exports.recalculateFromChildren = async (req, res) => {
-  try {
-    const goal = await Goal.findOne({
-      _id: req.params.id,
-      user: req.user._id
-    });
-
-    if (!goal) {
-      return res.status(404).json({
-        success: false,
-        message: 'Objectif non trouvé'
-      });
-    }
-
-    await Goal.recalculateFromChildren(goal._id);
-
-    // Recharger l'objectif mis à jour
-    const updatedGoal = await Goal.findById(goal._id);
-
-    // Émettre via Socket.IO
-    if (req.io) {
-      req.io.to(`user:${req.user._id}`).emit('goal-recalculated', { 
-        goal: updatedGoal
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Objectif recalculé avec succès',
-      data: { goal: updatedGoal }
-    });
-
-  } catch (error) {
-    console.error('Erreur recalculateFromChildren:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Erreur lors du recalcul',
-      error: error.message
-    });
-  }
-};
-
-// ==================== STATS & ANALYTICS ====================
-
-/**
- * Obtenir les statistiques des objectifs
+ * Obtenir les statistiques
  * GET /api/goals/stats
  */
 exports.getGoalsStats = async (req, res) => {
@@ -673,7 +955,6 @@ exports.getGoalsStats = async (req, res) => {
     if (year) filter.year = parseInt(year);
     if (category && category !== 'null') filter.category = category;
 
-    // Compter par statut
     const statusCounts = await Goal.aggregate([
       { $match: filter },
       {
@@ -684,7 +965,6 @@ exports.getGoalsStats = async (req, res) => {
       }
     ]);
 
-    // Compter par catégorie
     const categoryCounts = await Goal.aggregate([
       { $match: filter },
       {
@@ -696,7 +976,6 @@ exports.getGoalsStats = async (req, res) => {
       }
     ]);
 
-    // Progression globale
     const goals = await Goal.find(filter);
     const totalProgress = goals.reduce((sum, goal) => sum + goal.progress_percent, 0);
     const avgProgress = goals.length > 0 ? totalProgress / goals.length : 0;
@@ -718,99 +997,6 @@ exports.getGoalsStats = async (req, res) => {
       message: 'Erreur lors de la récupération des statistiques',
       error: error.message
     });
-  }
-};
-
-// ==================== FONCTIONS INTERNES (pour webhooks) ====================
-
-/**
- * Synchroniser l'objectif commits (version interne pour webhooks)
- * Utilisée par webhook.controller.js
- */
-exports.syncCommitsGoalInternal = async (userId, io) => {
-  try {
-    const goal = await Goal.findOne({
-      user: userId,
-      'commits_integration.enabled': true,
-      level: { $in: ['annual', 'monthly', 'daily'] }
-    }).sort({ level: 1 });
-
-    if (!goal) return null;
-
-    const tasks = await Task.find({
-      user: userId,
-      'commits.0': { $exists: true }
-    });
-
-    const totalCommits = tasks.reduce((sum, task) => {
-      return sum + (task.commits ? task.commits.length : 0);
-    }, 0);
-
-    const previousValue = goal.current_value;
-    goal.current_value = totalCommits;
-    await goal.updateProgressAndStatus();
-
-    const amountChanged = totalCommits - previousValue;
-    if (amountChanged !== 0) {
-      await Goal.propagateProgressUp(goal._id, amountChanged);
-    }
-
-    if (io) {
-      io.to(`user:${userId}`).emit('goal-commits-synced', { 
-        goal,
-        totalCommits,
-        amountChanged
-      });
-    }
-
-    return { goal, totalCommits, amountChanged };
-  } catch (error) {
-    console.error('Erreur syncCommitsGoalInternal:', error);
-    return null;
-  }
-};
-
-/**
- * Synchroniser l'objectif livres (version interne pour task.controller.js)
- * Utilisée par task.controller.js quand un projet book est complété
- */
-exports.syncBookGoalInternal = async (projectId, userId, io) => {
-  try {
-    const project = await Project.findOne({
-      _id: projectId,
-      user: userId,
-      type: 'book'
-    });
-
-    if (!project || project.progress < 100) {
-      return null;
-    }
-
-    const goal = await Goal.findOne({
-      user: userId,
-      category: 'learning',
-      type: 'numeric',
-      unit: 'livres'
-    }).sort({ level: 1 });
-
-    if (!goal) return null;
-
-    goal.current_value += 1;
-    await goal.updateProgressAndStatus();
-    await Goal.propagateProgressUp(goal._id, 1);
-
-    if (io) {
-      io.to(`user:${userId}`).emit('book-completed', { 
-        goal,
-        project,
-        bookTitle: project.name
-      });
-    }
-
-    return { goal, project };
-  } catch (error) {
-    console.error('Erreur syncBookGoalInternal:', error);
-    return null;
   }
 };
 
