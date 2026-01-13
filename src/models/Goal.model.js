@@ -266,7 +266,7 @@ const GoalSchema = new mongoose.Schema({
       default: false
     },
     account_id: String,
-    category: String, // 'savings', 'clothing', 'electronics', etc.
+    category: String,
     auto_link: {
       type: Boolean,
       default: true
@@ -294,7 +294,7 @@ const GoalSchema = new mongoose.Schema({
     default: 'simple'
   },
 
-  items: [mongoose.Schema.Types.Mixed], // Pour tracking détaillé
+  items: [mongoose.Schema.Types.Mixed],
 
   notes: {
     type: String,
@@ -313,6 +313,7 @@ GoalSchema.index({ user: 1, deadline: 1 });
 GoalSchema.index({ user: 1, parent_annual_id: 1 });
 GoalSchema.index({ user: 1, display_in_hierarchy: 1, level: 1 });
 GoalSchema.index({ user: 1, display_in_checklist: 1 });
+GoalSchema.index({ user: 1, day_of_year: 1, year: 1 }); // 🆕 Pour retrouver daily goals
 
 // ==================== MÉTHODES D'INSTANCE ====================
 
@@ -392,7 +393,40 @@ GoalSchema.methods.updateProgressAndStatus = async function() {
 // ==================== MÉTHODES STATIQUES ====================
 
 /**
- * Décomposer automatiquement un objectif annuel numérique
+ * 🆕 HELPER: Calculer les dates d'une semaine ISO
+ */
+GoalSchema.statics.calculateWeekDates = function(weekNum, year) {
+  // Début de l'année
+  const jan1 = new Date(year, 0, 1);
+  const jan1DayOfWeek = jan1.getDay() || 7; // Lundi = 1, Dimanche = 7
+  
+  // Début de la semaine 1 ISO (premier lundi de l'année)
+  const week1Start = new Date(year, 0, 1 + (8 - jan1DayOfWeek));
+  
+  // Calculer le début et fin de la semaine demandée
+  const weekStart = new Date(week1Start);
+  weekStart.setDate(weekStart.getDate() + (weekNum - 1) * 7);
+  
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+  weekEnd.setHours(23, 59, 59, 999);
+  
+  return { weekStart, weekEnd };
+};
+
+/**
+ * 🆕 HELPER: Calculer le numéro de semaine ISO pour une date
+ */
+GoalSchema.statics.getWeekNumber = function(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+};
+
+/**
+ * 🆕 MODIFIÉ: Décomposer automatiquement avec 365 daily goals
  */
 GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
   const annualGoal = await this.findById(annualGoalId);
@@ -420,8 +454,12 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
   annualGoal.is_annual_breakdown = true;
   await annualGoal.save();
 
-  // Créer les objectifs trimestriels (4)
+  console.log(`🔄 Starting auto-breakdown for: ${annualGoal.title}`);
+
+  // ==================== QUARTERLY (4 goals) ====================
   for (let q = 1; q <= 4; q++) {
+    const quarterEnd = new Date(annualGoal.year, q * 3, 0, 23, 59, 59);
+    
     const quarterlyGoal = await this.create({
       user: annualGoal.user,
       title: `${annualGoal.title} - Q${q}`,
@@ -434,10 +472,10 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
       target_value: Math.round(annualGoal.target_value / 4),
       current_value: 0,
       unit: annualGoal.unit,
+      deadline: quarterEnd, // 🆕 Deadline calculée
       parent_goal_id: annualGoal._id,
       parent_annual_id: annualGoal._id,
       is_auto_generated: true,
-      is_annual_breakdown: false,
       display_in_hierarchy: true,
       display_in_checklist: false,
       color: annualGoal.color,
@@ -452,9 +490,13 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
     annualGoal.children_goal_ids.push(quarterlyGoal._id);
   }
 
-  // Créer les objectifs mensuels (12)
+  console.log(`✅ Created ${breakdown.quarterly.length} quarterly goals`);
+
+  // ==================== MONTHLY (12 goals) ====================
   for (let m = 1; m <= 12; m++) {
     const quarter = Math.ceil(m / 3);
+    const monthEnd = new Date(annualGoal.year, m, 0, 23, 59, 59);
+    
     const monthlyGoal = await this.create({
       user: annualGoal.user,
       title: `${annualGoal.title} - Mois ${m}`,
@@ -468,10 +510,10 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
       target_value: Math.round(annualGoal.target_value / 12),
       current_value: 0,
       unit: annualGoal.unit,
+      deadline: monthEnd, // 🆕 Deadline calculée
       parent_goal_id: annualGoal._id,
       parent_annual_id: annualGoal._id,
       is_auto_generated: true,
-      is_annual_breakdown: false,
       display_in_hierarchy: true,
       display_in_checklist: false,
       color: annualGoal.color,
@@ -486,9 +528,13 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
     annualGoal.children_goal_ids.push(monthlyGoal._id);
   }
 
-  // Créer les objectifs hebdomadaires (52)
+  console.log(`✅ Created ${breakdown.monthly.length} monthly goals`);
+
+  // ==================== WEEKLY (52 goals) ====================
   for (let w = 1; w <= 52; w++) {
-    const month = Math.ceil(w / 4.33);
+    const { weekEnd } = this.calculateWeekDates(w, annualGoal.year);
+    const month = weekEnd.getMonth() + 1;
+    
     const weeklyGoal = await this.create({
       user: annualGoal.user,
       title: `${annualGoal.title} - Semaine ${w}`,
@@ -497,15 +543,15 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
       category: annualGoal.category,
       level: 'weekly',
       year: annualGoal.year,
-      month: month <= 12 ? month : 12,
+      month: month,
       week: w,
       target_value: Math.round(annualGoal.target_value / 52),
       current_value: 0,
       unit: annualGoal.unit,
+      deadline: weekEnd, // 🆕 Deadline calculée (dimanche)
       parent_goal_id: annualGoal._id,
       parent_annual_id: annualGoal._id,
       is_auto_generated: true,
-      is_annual_breakdown: false,
       display_in_hierarchy: true,
       display_in_checklist: false,
       color: annualGoal.color,
@@ -520,42 +566,67 @@ GoalSchema.statics.autoBreakdown = async function(annualGoalId) {
     annualGoal.children_goal_ids.push(weeklyGoal._id);
   }
 
-  // Créer l'objectif quotidien (réutilisable chaque jour)
-  const dailyGoal = await this.create({
-    user: annualGoal.user,
-    title: `${annualGoal.title} - Quotidien`,
-    description: `Objectif quotidien - ~${Math.round(annualGoal.target_value / 365)} ${annualGoal.unit}/jour`,
-    type: 'numeric',
-    category: annualGoal.category,
-    level: 'daily',
-    year: annualGoal.year,
-    target_value: Math.round(annualGoal.target_value / 365),
-    current_value: 0,
-    unit: annualGoal.unit,
-    parent_goal_id: annualGoal._id,
-    parent_annual_id: annualGoal._id,
-    is_auto_generated: true,
-    is_annual_breakdown: false,
-    display_in_hierarchy: true,
-    display_in_checklist: true,
-    color: annualGoal.color,
-    icon: annualGoal.icon,
-    priority: annualGoal.priority,
-    integration_type: annualGoal.integration_type,
-    commits_integration: annualGoal.commits_integration,
-    rise_integration: annualGoal.rise_integration
-  });
+  console.log(`✅ Created ${breakdown.weekly.length} weekly goals`);
 
-  breakdown.daily.push(dailyGoal._id);
-  annualGoal.children_goal_ids.push(dailyGoal._id);
+  // ==================== DAILY (365 goals) 🆕 ====================
+  const dailyTargetPerDay = Math.round(annualGoal.target_value / 365);
+  
+  for (let d = 1; d <= 365; d++) {
+    // Calculer la date exacte
+    const dayDate = new Date(annualGoal.year, 0, d);
+    const month = dayDate.getMonth() + 1;
+    const weekNum = this.getWeekNumber(dayDate);
+    const quarter = Math.ceil(month / 3);
+    
+    const dailyGoal = await this.create({
+      user: annualGoal.user,
+      title: `${annualGoal.title} - Jour ${d}`,
+      description: `Objectif quotidien - ${dailyTargetPerDay} ${annualGoal.unit}`,
+      type: 'numeric',
+      category: annualGoal.category,
+      level: 'daily',
+      year: annualGoal.year,
+      quarter: quarter,
+      month: month,
+      week: weekNum,
+      day_of_year: d,
+      target_value: dailyTargetPerDay,
+      current_value: 0,
+      unit: annualGoal.unit,
+      deadline: new Date(dayDate.setHours(23, 59, 59, 999)), // 🆕 Deadline = fin du jour
+      parent_goal_id: annualGoal._id,
+      parent_annual_id: annualGoal._id,
+      is_auto_generated: true,
+      display_in_hierarchy: false, // 🆕 Pas affiché dans hierarchy
+      display_in_checklist: true,  // 🆕 Affiché dans checklist daily
+      color: annualGoal.color,
+      icon: annualGoal.icon,
+      priority: annualGoal.priority,
+      integration_type: annualGoal.integration_type,
+      commits_integration: annualGoal.commits_integration,
+      rise_integration: annualGoal.rise_integration
+    });
+
+    breakdown.daily.push(dailyGoal._id);
+    annualGoal.children_goal_ids.push(dailyGoal._id);
+    
+    // Log tous les 50 jours pour éviter spam
+    if (d % 50 === 0) {
+      console.log(`⏳ Created ${d}/365 daily goals...`);
+    }
+  }
+
+  console.log(`✅ Created ${breakdown.daily.length} daily goals`);
 
   await annualGoal.save();
+
+  console.log(`🎉 Auto-breakdown complete! Total children: ${annualGoal.children_goal_ids.length}`);
 
   return breakdown;
 };
 
 /**
- * Propager la progression vers le haut (enfant → parent)
+ * 🆕 MODIFIÉ: Propager + recalculer Weekly/Monthly
  */
 GoalSchema.statics.propagateProgressUp = async function(childGoalId, amountChanged) {
   const childGoal = await this.findById(childGoalId);
@@ -582,6 +653,39 @@ GoalSchema.statics.propagateProgressUp = async function(childGoalId, amountChang
     }
 
     await parentGoal.updateProgressAndStatus();
+
+    // 🆕 NOUVEAU: Si update depuis Daily, recalculer Weekly et Monthly
+    if (childGoal.level === 'daily' && childGoal.parent_annual_id) {
+      console.log(`🔄 Daily goal updated, recalculating Weekly and Monthly...`);
+      
+      // Recalculer le Weekly de cette semaine
+      const weeklyGoal = await this.findOne({
+        user: childGoal.user,
+        level: 'weekly',
+        week: childGoal.week,
+        year: childGoal.year,
+        parent_annual_id: childGoal.parent_annual_id
+      });
+      
+      if (weeklyGoal) {
+        await this.recalculateFromChildren(weeklyGoal._id);
+        console.log(`✅ Weekly goal W${childGoal.week} recalculated`);
+      }
+      
+      // Recalculer le Monthly de ce mois
+      const monthlyGoal = await this.findOne({
+        user: childGoal.user,
+        level: 'monthly',
+        month: childGoal.month,
+        year: childGoal.year,
+        parent_annual_id: childGoal.parent_annual_id
+      });
+      
+      if (monthlyGoal) {
+        await this.recalculateFromChildren(monthlyGoal._id);
+        console.log(`✅ Monthly goal M${childGoal.month} recalculated`);
+      }
+    }
 
     // Continuer vers le parent suivant si existe
     if (parentGoal.parent_goal_id) {
@@ -640,7 +744,7 @@ GoalSchema.statics.getFocusOfTheDay = async function(userId, date = new Date()) 
 // ==================== HOOKS ====================
 
 // Avant la sauvegarde
-GoalSchema.pre('save', function(next) {
+GoalSchema.pre('save', function() {
   // Auto-calculer quarter, month si année fournie
   if (this.level === 'quarterly' && this.quarter) {
     // Déjà défini
@@ -659,8 +763,6 @@ GoalSchema.pre('save', function(next) {
     this.total_steps = this.steps.length;
     this.completed_steps = this.steps.filter(s => s.completed).length;
   }
-
-  next();
 });
 
 const Goal = mongoose.model('Goal', GoalSchema);
