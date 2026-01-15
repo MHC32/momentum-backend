@@ -73,6 +73,7 @@ app.use('/api/projects', require('./routes/project.routes'));
 app.use('/api/tasks', require('./routes/task.routes'));
 app.use('/api/webhooks', require('./routes/webhook.routes')); // 🆕 WEBHOOK
 app.use('/api/goals', require('./routes/goal.routes'));
+app.use('/api/habits', require('./routes/habit.routes'));
 app.use('/api/webhooks/rise', require('./routes/rise-webhook.routes')); // 🆕 RISE Webhook
 
 // Error handler (must be last)
