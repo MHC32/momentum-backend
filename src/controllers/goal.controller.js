@@ -403,7 +403,7 @@ exports.getMonthlyGoals = async (req, res) => {
 exports.getWeeklyGoals = async (req, res) => {
   try {
     const { week } = req.params;
-    const { year, category } = req.query;
+    const { year } = req.query;
     
     const weekNum = parseInt(week);
     const yearNum = parseInt(year) || new Date().getFullYear();
@@ -417,54 +417,87 @@ exports.getWeeklyGoals = async (req, res) => {
 
     // Calculer les dates de la semaine
     const { weekStart, weekEnd } = Goal.calculateWeekDates(weekNum, yearNum);
+    const today = new Date();
+    const todayDayOfYear = Math.floor((today - new Date(today.getFullYear(), 0, 0)) / 86400000);
     
-    // 1. Objectifs hebdomadaires décomposés
-    const breakdownFilter = {
+    // Noms des jours (Lun=0, Mar=1, ..., Dim=6)
+    const dayNames = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+    
+    // 1. Récupérer TOUS les objectifs hebdomadaires de cette semaine
+    const weeklyGoals = await Goal.find({
       user: req.user._id,
       level: 'weekly',
       week: weekNum,
       year: yearNum,
       parent_annual_id: { $ne: null }
-    };
+    }).populate('parent_annual_id', 'title category unit');
 
-    if (category && category !== 'null') {
-      breakdownFilter.category = category;
-    }
-
-    const breakdownGoals = await Goal.find(breakdownFilter)
-      .sort({ category: 1, priority: -1 });
-
-    // 🆕 2. Récupérer les 7 daily goals de cette semaine
-    const dailyGoals = await Goal.find({
-      user: req.user._id,
-      level: 'daily',
-      week: weekNum,
-      year: yearNum,
-      parent_annual_id: { $ne: null }
-    }).sort({ day_of_year: 1 });
-
-    // 🆕 3. Construire le dailyData pour le frontend
-    const dayNames = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
-    const today = new Date();
-    const todayDayOfYear = Math.floor((today - new Date(today.getFullYear(), 0, 0)) / 86400000);
-
-    const dailyData = dailyGoals.map(goal => {
-      const dayDate = new Date(yearNum, 0, goal.day_of_year);
-      const dayOfWeek = dayDate.getDay() === 0 ? 6 : dayDate.getDay() - 1; // Lun=0, Dim=6
-      
-      return {
-        day: dayNames[dayOfWeek],
-        value: goal.current_value,
-        isCompleted: goal.completed,
-        isToday: goal.day_of_year === todayDayOfYear,
-        goal_id: goal._id
+    // 2. Agréger par type (unit) - "commits", "€", "pages", etc.
+    const goalsByType = {};
+    
+    // Initialiser la structure pour chaque type
+    const allTypes = [...new Set(weeklyGoals.map(g => g.unit || 'default'))];
+    allTypes.forEach(type => {
+      goalsByType[type] = {
+        title: getFriendlyTitle(type), // "commits GitHub", "Épargne", etc.
+        unit: type,
+        weeklyTarget: 0,
+        weeklyCurrent: 0,
+        dailyData: Array(7).fill(null).map((_, index) => ({
+          day: dayNames[index],
+          value: 0,
+          isCompleted: false,
+          isToday: false
+        }))
       };
     });
 
-    // 4. Ajouter dailyData à chaque breakdownGoal
-    breakdownGoals.forEach(goal => {
-      goal._doc.dailyData = dailyData;
-    });
+    // 3. Pour chaque weekly goal, récupérer ses daily goals et agréger
+    for (const weeklyGoal of weeklyGoals) {
+      const type = weeklyGoal.unit || 'default';
+      
+      // Ajouter au total hebdomadaire
+      goalsByType[type].weeklyTarget += weeklyGoal.target_value;
+      goalsByType[type].weeklyCurrent += weeklyGoal.current_value;
+      
+      // Récupérer les daily goals de cette semaine pour CE type
+      const dailyGoals = await Goal.find({
+        user: req.user._id,
+        level: 'daily',
+        week: weekNum,
+        year: yearNum,
+        parent_annual_id: weeklyGoal.parent_annual_id,
+        unit: weeklyGoal.unit
+      }).sort({ day_of_year: 1 });
+
+      // Mettre à jour le dailyData
+      dailyGoals.forEach(dailyGoal => {
+        const dayDate = new Date(yearNum, 0, dailyGoal.day_of_year);
+        const dayOfWeek = dayDate.getDay() === 0 ? 6 : dayDate.getDay() - 1; // Lun=0, Dim=6
+        
+        if (dayOfWeek >= 0 && dayOfWeek < 7) {
+          // Initialiser si null
+          if (goalsByType[type].dailyData[dayOfWeek].value === 0) {
+            goalsByType[type].dailyData[dayOfWeek] = {
+              day: dayNames[dayOfWeek],
+              value: 0,
+              isCompleted: false,
+              isToday: dailyGoal.day_of_year === todayDayOfYear
+            };
+          }
+          
+          // Ajouter la valeur
+          goalsByType[type].dailyData[dayOfWeek].value += dailyGoal.current_value;
+          goalsByType[type].dailyData[dayOfWeek].isCompleted = 
+            goalsByType[type].dailyData[dayOfWeek].isCompleted || dailyGoal.completed;
+        }
+      });
+    }
+
+    // 4. Convertir en tableau pour le frontend
+    const aggregatedGoals = Object.values(goalsByType).filter(type => 
+      type.weeklyTarget > 0 // Ne garder que les types avec des objectifs
+    );
 
     // 5. Objectifs personnels pour cette semaine
     const personalFilter = {
@@ -482,42 +515,20 @@ exports.getWeeklyGoals = async (req, res) => {
       year: yearNum
     };
 
-    if (category && category !== 'null') {
-      personalFilter.category = category;
-    }
-
     const personalGoals = await Goal.find(personalFilter)
       .sort({ priority: -1, deadline: 1 });
 
-    // Combiner
-    const allGoals = [...breakdownGoals, ...personalGoals];
-
-    // Recalculer progress
-    for (const goal of allGoals) {
-      goal.progress_percent = goal.calculateProgress();
-      goal.status = goal.calculateStatus();
-    }
-
-    // Grouper par catégorie
-    const goalsByCategory = allGoals.reduce((acc, goal) => {
-      if (!acc[goal.category]) {
-        acc[goal.category] = [];
-      }
-      acc[goal.category].push(goal);
-      return acc;
-    }, {});
-
     res.status(200).json({
       success: true,
-      count: allGoals.length,
+      count: aggregatedGoals.length,
       data: {
         week: weekNum,
         year: yearNum,
         weekStart: weekStart.toISOString(),
         weekEnd: weekEnd.toISOString(),
-        goals: allGoals,
-        goalsByCategory,
-        breakdown: breakdownGoals.length,
+        goals: aggregatedGoals, // 🆕 Objectifs agrégés par type
+        personalGoals, // Objectifs personnels séparés
+        breakdown: weeklyGoals.length,
         personal: personalGoals.length
       }
     });
@@ -532,6 +543,21 @@ exports.getWeeklyGoals = async (req, res) => {
   }
 };
 
+// Helper: Titre convivial par type
+function getFriendlyTitle(type) {
+  const titles = {
+    'commits': 'commits GitHub',
+    '€': 'Épargne',
+    'EUR': 'Épargne',
+    'pages': 'Pages lues',
+    'books': 'Livres',
+    'minutes': 'Minutes',
+    'hours': 'Heures',
+    'km': 'Kilomètres',
+    'kg': 'Poids'
+  };
+  return titles[type] || type;
+}
 // ==================== VUE QUOTIDIEN 🆕 MODIFIÉ ====================
 
 /**
