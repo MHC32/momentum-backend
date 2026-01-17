@@ -20,6 +20,12 @@ const CommitSchema = new mongoose.Schema({
     index: true
   },
   
+  goal: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Goal',
+    index: true
+  },
+  
   count: {
     type: Number,
     default: 1,
