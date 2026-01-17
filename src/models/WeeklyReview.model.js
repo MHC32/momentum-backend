@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const ReminderSchema = new mongoose.Schema({
+const WeeklyReviewSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -8,65 +8,63 @@ const ReminderSchema = new mongoose.Schema({
     index: true
   },
   
-  type: {
-    type: String,
-    enum: ['urgent', 'suggestion', 'planning'],
-    required: true,
-    index: true
-  },
-  
-  priority: {
+  weekNumber: {
     type: Number,
+    required: true,
     min: 1,
-    max: 5,
-    default: 3
+    max: 53
   },
   
-  title: {
-    type: String,
+  year: {
+    type: Number,
     required: true
   },
   
-  message: {
-    type: String,
+  weekStart: {
+    type: Date,
     required: true
   },
   
-  actionUrl: String,
-  
-  relatedTask: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Task'
+  weekEnd: {
+    type: Date,
+    required: true
   },
   
-  relatedGoal: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Goal'
+  stats: {
+    tasksCompleted: { type: Number, default: 0 },
+    tasksCreated: { type: Number, default: 0 },
+    commits: { type: Number, default: 0 },
+    pomodoroSessions: { type: Number, default: 0 },
+    productivityScore: { type: Number, default: 0 }
   },
   
-  relatedProject: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Project'
-  },
+  achievements: [{
+    type: String
+  }],
   
-  isRead: {
+  timeByProject: [{
+    project: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Project'
+    },
+    minutes: Number
+  }],
+  
+  notes: String,
+  
+  isCompleted: {
     type: Boolean,
     default: false
   },
   
-  isDismissed: {
-    type: Boolean,
-    default: false
-  },
+  completedAt: Date,
   
-  readAt: Date,
-  dismissedAt: Date
+  exportUrl: String
 }, {
   timestamps: true
 });
 
-// Index
-ReminderSchema.index({ user: 1, isRead: 1, isDismissed: 1 });
-ReminderSchema.index({ user: 1, type: 1, createdAt: -1 });
+// Index unique par semaine
+WeeklyReviewSchema.index({ user: 1, year: 1, weekNumber: 1 }, { unique: true });
 
-module.exports = mongoose.model('Reminder', ReminderSchema);
+module.exports = mongoose.model('WeeklyReview', WeeklyReviewSchema);
