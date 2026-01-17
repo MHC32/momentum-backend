@@ -49,6 +49,11 @@ const ReminderSchema = new mongoose.Schema({
     ref: 'Project'
   },
   
+  relatedHabit: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Habit'
+  },
+  
   isRead: {
     type: Boolean,
     default: false
