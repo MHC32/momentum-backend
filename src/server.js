@@ -69,6 +69,7 @@ app.get('/health', (req, res) => {
 
 // API Routes
 app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/api/dashboard', require('./routes/dashboard.routes'));
 app.use('/api/projects', require('./routes/project.routes'));
 app.use('/api/tasks', require('./routes/task.routes'));
 app.use('/api/webhooks', require('./routes/webhook.routes')); // 🆕 WEBHOOK
