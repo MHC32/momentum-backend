@@ -82,4 +82,22 @@ UserSchema.methods.getSignedJwtToken = function() {
   );
 };
 
+// Calculer niveau basé sur XP (formule exemple)
+UserSchema.methods.calculateLevel = function() {
+  // 100 XP par niveau
+  const newLevel = Math.floor(this.xp / 100) + 1;
+  if (newLevel !== this.level) {
+    this.level = newLevel;
+  }
+  return this.level;
+};
+
+// Ajouter XP et recalculer niveau
+UserSchema.methods.addXP = async function(amount) {
+  this.xp += amount;
+  this.calculateLevel();
+  await this.save();
+  return this;
+};
+
 module.exports = mongoose.model('User', UserSchema);
