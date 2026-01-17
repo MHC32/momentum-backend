@@ -66,15 +66,7 @@ const TaskSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
-  // 🆕 NOUVEAU : Commits array pour tracking GitHub
-  commits: [{
-    message: String,
-    hash: String,
-    timestamp: Date,
-    author: String,
-    url: String,
-    repo: String
-  }],
+  
   // Legacy (garder pour compatibilité)
   gitCommits: [{
     hash: String,

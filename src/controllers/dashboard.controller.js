@@ -3,6 +3,7 @@
 const Task = require('../models/Task.model');
 const Project = require('../models/Project.model');
 const Habit = require('../models/Habit.model');
+const Commit = require('../models/Commit.model'); // 🆕 AJOUTER
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -231,29 +232,15 @@ exports.getDashboard = async (req, res) => {
     const lastWeekStart = getLastWeekStart();
     const lastWeekEnd = getLastWeekEnd();
     
-    // 1. Commits cette semaine (depuis Task.commits)
-    const tasksWithCommits = await Task.find({ 
+    // 1. Commits cette semaine (depuis Commit model)
+    const commitsThisWeek = await Commit.countDocuments({
       user: userId,
-      'commits.0': { $exists: true }
+      timestamp: { $gte: weekStart, $lte: weekEnd }
     });
     
-    let commitsThisWeek = 0;
-    let commitsLastWeek = 0;
-    
-    tasksWithCommits.forEach(task => {
-      if (task.commits && Array.isArray(task.commits)) {
-        task.commits.forEach(commit => {
-          const commitDate = new Date(commit.timestamp);
-          
-          if (commitDate >= weekStart && commitDate <= weekEnd) {
-            commitsThisWeek++;
-          }
-          
-          if (commitDate >= lastWeekStart && commitDate <= lastWeekEnd) {
-            commitsLastWeek++;
-          }
-        });
-      }
+    const commitsLastWeek = await Commit.countDocuments({
+      user: userId,
+      timestamp: { $gte: lastWeekStart, $lte: lastWeekEnd }
     });
     
     const commitsChange = calculateChange(commitsThisWeek, commitsLastWeek);
@@ -331,10 +318,10 @@ exports.getDashboard = async (req, res) => {
         const taskCount = tasks.length;
         const completedCount = tasks.filter(t => t.status === 'done').length;
         
-        // Compter commits
-        const commitCount = tasks.reduce((acc, task) => {
-          return acc + (task.commits?.length || 0);
-        }, 0);
+        // Compter commits depuis Commit model
+        const commitCount = await Commit.countDocuments({ 
+          project: project._id 
+        });
         
         const progress = calculateProgress(completedCount, taskCount);
         
@@ -361,31 +348,24 @@ exports.getDashboard = async (req, res) => {
     
     const recentActivity = [];
     
-    // Recent commits
-    const recentTasksWithCommits = await Task.find({ 
-      user: userId,
-      'commits.0': { $exists: true }
+    // Recent commits depuis Commit model
+    const recentCommits = await Commit.find({ 
+      user: userId
     })
       .populate('project', 'name color')
+      .populate('task', 'title taskId')
+      .sort({ timestamp: -1 })
       .limit(10);
     
-    recentTasksWithCommits.forEach(task => {
-      if (task.commits && task.commits.length > 0) {
-        const sortedCommits = [...task.commits].sort((a, b) => 
-          new Date(b.timestamp) - new Date(a.timestamp)
-        );
-        
-        sortedCommits.slice(0, 3).forEach(commit => {
-          recentActivity.push({
-            type: 'commit',
-            timestamp: commit.timestamp,
-            icon: '💻',
-            title: `Commit sur ${task.project?.name || 'Unknown'}`,
-            description: commit.message || 'No message',
-            project: task.project
-          });
-        });
-      }
+    recentCommits.forEach(commit => {
+      recentActivity.push({
+        type: 'commit',
+        timestamp: commit.timestamp,
+        icon: '💻',
+        title: `Commit sur ${commit.project?.name || 'Projet'}`,
+        description: commit.message || `${commit.count} commit${commit.count > 1 ? 's' : ''}`,
+        project: commit.project
+      });
     });
     
     // Recent completed tasks
