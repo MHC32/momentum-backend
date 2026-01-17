@@ -30,6 +30,14 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+   xp: {
+    type: Number,
+    default: 0
+  },
+  level: {
+    type: Number,
+    default: 1
+  },
   role: {
     type: String,
     enum: ['user', 'admin'],
