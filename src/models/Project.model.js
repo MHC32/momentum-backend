@@ -138,7 +138,7 @@ ProjectSchema.methods.calculatePagesRead = async function() {
 };
 
 // 🆕 HOOK : Auto-compléter le projet book si toutes les tâches sont done
-ProjectSchema.pre('save', async function() {
+ProjectSchema.pre('save', async function(next) {
   if (this.type === 'book' && this.isModified('progress')) {
     // Si le projet atteint 100% et n'était pas encore complété
     if (this.progress >= 100 && this.status !== 'completed') {
@@ -147,6 +147,7 @@ ProjectSchema.pre('save', async function() {
       console.log(`📚 Book project "${this.name}" auto-completed`);
     }
   }
+  next();
 });
 
 // Index pour recherche rapide
