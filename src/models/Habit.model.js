@@ -124,4 +124,33 @@ HabitSchema.methods.calculateStreak = function() {
   return streak;
 };
 
+// Get habits due today (static method)
+HabitSchema.statics.getDueToday = async function(userId) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const habits = await this.find({ 
+    user: userId, 
+    archived: false 
+  });
+  
+  // Filter habits not completed today
+  const dueHabits = [];
+  
+  for (const habit of habits) {
+    const todayEntry = habit.calendar.find(c => {
+      const entryDate = new Date(c.date);
+      entryDate.setHours(0, 0, 0, 0);
+      return entryDate.getTime() === today.getTime();
+    });
+    
+    // Si pas d'entrée aujourd'hui OU pas done
+    if (!todayEntry || todayEntry.status !== 'done') {
+      dueHabits.push(habit);
+    }
+  }
+  
+  return dueHabits;
+};
+
 module.exports = mongoose.model('Habit', HabitSchema);
