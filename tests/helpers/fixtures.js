@@ -80,7 +80,7 @@ const validBookProjectPayload = {
 const validUserPayload = {
   name: 'John Doe',
   email: 'john.doe@example.com',
-  password: 'securePassword123'
+  password: 'SecurePass123'
 };
 
 /**

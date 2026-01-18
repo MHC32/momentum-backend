@@ -9,6 +9,11 @@ const {
 } = require('../controllers/project.controller');
 
 const { protect } = require('../middleware/auth');
+const {
+  createProjectValidator,
+  updateProjectValidator,
+  projectIdValidator
+} = require('../validators/project.validator');
 
 const router = express.Router();
 
@@ -18,14 +23,14 @@ router.use(protect);
 // Routes principales
 router.route('/')
   .get(getProjects)
-  .post(createProject);
+  .post(createProjectValidator, createProject);
 
 router.route('/:id')
-  .get(getProject)
-  .put(updateProject)
-  .delete(deleteProject);
+  .get(projectIdValidator, getProject)
+  .put(updateProjectValidator, updateProject)
+  .delete(projectIdValidator, deleteProject);
 
 // Route pour mettre à jour la progression
-router.put('/:id/progress', updateProjectProgress);
+router.put('/:id/progress', projectIdValidator, updateProjectProgress);
 
 module.exports = router;

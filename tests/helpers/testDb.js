@@ -12,7 +12,7 @@ const createTestUser = async (overrides = {}) => {
   const defaultUser = {
     name: 'Test User',
     email: 'test@example.com',
-    password: 'password123',
+    password: 'Password123',
     xp: 0,
     level: 1,
     role: 'user',
