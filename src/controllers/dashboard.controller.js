@@ -199,7 +199,6 @@ exports.getDashboard = async (req, res) => {
         type: t.type,
         deadline: t.deadline,
         project: t.project,
-        commitsCount: t.commits?.length || 0,
         estimatedTime: t.estimatedTime
       }))
     ];
@@ -480,32 +479,25 @@ exports.getRecentActivity = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     
     const recentActivity = [];
-    
-    // Recent commits
-    const recentTasksWithCommits = await Task.find({ 
-      user: userId,
-      'commits.0': { $exists: true }
+
+    // Recent commits depuis Commit model
+    const recentCommits = await Commit.find({
+      user: userId
     })
       .populate('project', 'name color')
+      .populate('task', 'title taskId')
+      .sort({ timestamp: -1 })
       .limit(10);
-    
-    recentTasksWithCommits.forEach(task => {
-      if (task.commits && task.commits.length > 0) {
-        const sortedCommits = [...task.commits].sort((a, b) => 
-          new Date(b.timestamp) - new Date(a.timestamp)
-        );
-        
-        sortedCommits.slice(0, 3).forEach(commit => {
-          recentActivity.push({
-            type: 'commit',
-            timestamp: commit.timestamp,
-            icon: '💻',
-            title: `Commit sur ${task.project?.name || 'Unknown'}`,
-            description: commit.message || 'No message',
-            project: task.project
-          });
-        });
-      }
+
+    recentCommits.forEach(commit => {
+      recentActivity.push({
+        type: 'commit',
+        timestamp: commit.timestamp,
+        icon: '💻',
+        title: `Commit sur ${commit.project?.name || 'Projet'}`,
+        description: commit.message || `${commit.count} commit${commit.count > 1 ? 's' : ''}`,
+        project: commit.project
+      });
     });
     
     // Recent completed tasks

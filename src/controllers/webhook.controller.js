@@ -1,4 +1,5 @@
 const Task = require('../models/Task.model');
+const Commit = require('../models/Commit.model');
 const goalController = require('./goal.controller');
 
 // @desc    Handle GitHub webhook for commits
@@ -43,32 +44,30 @@ exports.handleGitHubWebhook = async (req, res) => {
       }
 
       // Vérifier si commit déjà enregistré (éviter duplicates)
-      const commitExists = task.commits.some(c => c.hash === commit.id);
-      if (commitExists) {
+      const existingCommit = await Commit.findOne({
+        hash: commit.id,
+        task: task._id
+      });
+
+      if (existingCommit) {
         console.log(`⚠️  Commit ${commit.id} already exists for ${taskId}`);
         continue;
       }
 
-      // Ajouter le commit
-      task.commits.push({
-        message: commit.message,
+      // Créer un nouveau document Commit
+      await Commit.create({
         hash: commit.id,
+        message: commit.message,
+        author: commit.author.name,
         timestamp: new Date(commit.timestamp),
-        author: commit.author.name,
         url: commit.url,
-        repo: repository?.name || 'unknown'
+        repo: repository?.name || 'unknown',
+        task: task._id,
+        user: task.user,
+        project: task.project,
+        source: 'github'
       });
 
-      // Aussi ajouter à gitCommits (legacy)
-      task.gitCommits.push({
-        hash: commit.id,
-        message: commit.message,
-        author: commit.author.name,
-        date: new Date(commit.timestamp),
-        repo: repository?.name || 'unknown'
-      });
-
-      await task.save();
       console.log(`✅ Commit added to task ${taskId}`);
       updatedTasks.push(task);
 
@@ -111,8 +110,7 @@ exports.handleGitHubWebhook = async (req, res) => {
       message: `Processed ${commits.length} commits, updated ${updatedTasks.length} tasks`,
       updatedTasks: updatedTasks.map(t => ({
         taskId: t.taskId,
-        title: t.title,
-        commitsCount: t.commits.length
+        title: t.title
       }))
     });
 

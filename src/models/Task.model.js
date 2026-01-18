@@ -66,15 +66,7 @@ const TaskSchema = new mongoose.Schema({
     type: Number,
     default: null
   },
-  
-  // Legacy (garder pour compatibilité)
-  gitCommits: [{
-    hash: String,
-    message: String,
-    author: String,
-    date: Date,
-    repo: String
-  }],
+
   // Relations
   project: {
     type: mongoose.Schema.Types.ObjectId,
