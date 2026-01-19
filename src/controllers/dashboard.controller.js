@@ -3,7 +3,8 @@
 const Task = require('../models/Task.model');
 const Project = require('../models/Project.model');
 const Habit = require('../models/Habit.model');
-const Commit = require('../models/Commit.model'); // 🆕 AJOUTER
+const Commit = require('../models/Commit.model');
+const Goal = require('../models/Goal.model');
 
 // ==================== HELPER FUNCTIONS ====================
 
