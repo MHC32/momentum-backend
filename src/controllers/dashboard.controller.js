@@ -399,8 +399,57 @@ exports.getDashboard = async (req, res) => {
       activity.timestampRelative = getRelativeTime(activity.timestamp);
     });
     
+    // ==================== DAILY GOAL HIGHLIGHT ====================
+
+    let dailyGoalHighlight = null;
+
+    try {
+      // Chercher un objectif annuel avec intégration commits
+      const commitsGoal = await Goal.findOne({
+        user: userId,
+        level: 'annual',
+        year: now.getFullYear(),
+        integration_type: 'commits',
+        completed: false
+      });
+
+      if (commitsGoal) {
+        // Calculer le target quotidien
+        const dailyTarget = Math.ceil(commitsGoal.target_value / 365);
+
+        // Compter les commits d'aujourd'hui
+        const commitsToday = await Commit.countDocuments({
+          user: userId,
+          timestamp: { $gte: today, $lt: tomorrow }
+        });
+
+        // Calculer si dépassé
+        const exceeded = commitsToday >= dailyTarget;
+        const remaining = Math.max(0, dailyTarget - commitsToday);
+
+        dailyGoalHighlight = {
+          title: `${dailyTarget}+ ${commitsGoal.unit || 'commits'} aujourd'hui`,
+          current: commitsToday,
+          target: dailyTarget,
+          exceeded,
+          remaining,
+          progress: Math.min(100, Math.round((commitsToday / dailyTarget) * 100)),
+          linkedGoal: {
+            _id: commitsGoal._id,
+            title: commitsGoal.title,
+            icon: commitsGoal.icon,
+            color: commitsGoal.color,
+            annualTarget: commitsGoal.target_value,
+            annualCurrent: commitsGoal.current_value
+          }
+        };
+      }
+    } catch (error) {
+      console.log('Daily goal highlight calculation failed:', error.message);
+    }
+
     // ==================== RESPONSE ====================
-    
+
     res.status(200).json({
       success: true,
       data: {
@@ -411,7 +460,8 @@ exports.getDashboard = async (req, res) => {
         focus,
         stats,
         projects,
-        recentActivity: recentActivity.slice(0, 10)
+        recentActivity: recentActivity.slice(0, 10),
+        dailyGoalHighlight
       }
     });
     
